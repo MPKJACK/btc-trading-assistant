@@ -101,7 +101,9 @@
 
   // ---------- features shared by backtest and live (only past data) ----------
   // ctx: {S, K, tRem(sec), sigma(per sqrt sec), closes1m(array incl. current partial), candles1m, S60 (price 60s ago), S300}
-  E.FEATURE_NAMES = ['z', 'mom1', 'mom5', 'rsiDev', 'emaSpread', 'volRatio', 'relVol', 'wick'];
+  E.FEATURE_NAMES = ['z', 'mom1', 'mom5', 'rsiDev', 'emaSpread', 'volRatio', 'relVol', 'wick', 'mom15', 'ema15', 'rsi15'];
+  E.CHART_1M = ['mom1', 'mom5', 'rsiDev', 'emaSpread', 'wick'];
+  E.CHART_15M = ['mom15', 'ema15', 'rsi15'];
   E.features = function (ctx) {
     const sig = ctx.sigma, t = Math.max(ctx.tRem, 1);
     const z = Math.log(ctx.S / ctx.K) / (sig * Math.sqrt(t));
@@ -116,7 +118,12 @@
     const volRatio = (isFinite(sShort) && sLong > 0) ? Math.log(sShort / sLong) : 0;
     let relVol = 0; if (cs.length >= 65) { const v5 = cs.slice(-5).reduce((a, x) => a + x.v, 0), v60 = cs.slice(-65, -5).reduce((a, x) => a + x.v, 0) / 12; relVol = v60 > 0 ? Math.log((v5 + 1e-9) / v60) : 0; }
     const wick = E.priceAction(cs).wick || 0;
-    const f = { z: E.clamp(z, -8, 8), mom1: E.clamp(mom1, -6, 6), mom5: E.clamp(mom5, -6, 6), rsiDev, emaSpread: E.clamp(emaSpread, -6, 6), volRatio: E.clamp(volRatio, -3, 3), relVol: E.clamp(relVol, -4, 4), wick };
+    // 15-minute chart: rolling 15-min bars sampled from 1-min closes (same construction live and in backtest)
+    const c15 = []; for (let i = cl.length - 1; i >= 0 && c15.length < 40; i -= 15) c15.unshift(cl[i]);
+    const mom15 = cl.length > 15 ? Math.log(ctx.S / cl[cl.length - 16]) / (sig * Math.sqrt(900)) : 0;
+    const ema15 = c15.length >= 22 ? Math.log(E.ema(c15, 9) / E.ema(c15, 21)) / (sig * Math.sqrt(900)) : 0;
+    const r15 = E.rsi(c15, 14), rsi15 = isFinite(r15) ? (r15 - 50) / 50 : 0;
+    const f = { z: E.clamp(z, -8, 8), mom1: E.clamp(mom1, -6, 6), mom5: E.clamp(mom5, -6, 6), rsiDev, emaSpread: E.clamp(emaSpread, -6, 6), volRatio: E.clamp(volRatio, -3, 3), relVol: E.clamp(relVol, -4, 4), wick, mom15: E.clamp(mom15, -6, 6), ema15: E.clamp(ema15, -6, 6), rsi15 };
     return f;
   };
 
@@ -194,11 +201,11 @@
     for (let i = 0; i < candles.length; i++) {
       const c0 = candles[i]; if (c0.t % 300 !== 0) continue;
       const iEnd = byT.get(c0.t + 240); if (iEnd === undefined || iEnd !== i + 4) continue; // need 5 contiguous minutes
-      if (i < 70) continue; // need history
+      if (i < 640) continue; // need ~10h of history for the 15-min chart features
       const K = c0.o, y = candles[iEnd].c >= K ? 1 : 0;
       for (let k = 1; k <= 4; k++) {
         const j = i + k - 1; // last completed candle index at decision time c0.t + 60k
-        const hist = candles.slice(Math.max(0, j - 90), j + 1);
+        const hist = candles.slice(Math.max(0, j - 620), j + 1);
         const sigma = E.sigmaPerSec(hist, 60); if (!(sigma > 0)) continue;
         const S = candles[j].c, tRem = 300 - 60 * k;
         const ctx = { S, K, tRem, sigma, closes1m: hist.map(x => x.c), candles1m: hist, S60: candles[j - 1].c, S300: candles[j - 5].c };
@@ -213,6 +220,9 @@
     { id: 'vol', name: 'Volatility (no fit)', feats: [] },
     { id: 'lz', name: 'Logistic: distance only', feats: ['z'] },
     { id: 'lzm', name: 'Logistic: distance + momentum', feats: ['z', 'mom1', 'mom5'] },
+    { id: 'l1m', name: 'Logistic: distance + 1-min chart', feats: ['z'].concat(E.CHART_1M) },
+    { id: 'l15m', name: 'Logistic: distance + 15-min chart', feats: ['z'].concat(E.CHART_15M) },
+    { id: 'lchart', name: 'Logistic: distance + 1m & 15m charts', feats: ['z'].concat(E.CHART_1M, E.CHART_15M) },
     { id: 'lall', name: 'Logistic: all features', feats: E.FEATURE_NAMES },
   ];
 
@@ -249,6 +259,12 @@
     return { windows: wins.length, samples: samples.length, testWindows: wins.length - startIdx, from: wins[0], to: wins[wins.length - 1], results, bestId: best.id, liveFit: live, oosBest: oos[best.id] };
   };
   function median(a) { const s = a.slice().sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : NaN; }
+
+  // Plain read of the 1-min and 15-min charts (descriptive; the probability comes from the model)
+  E.chartRead = function (f) {
+    const lab = (x) => x > 0.5 ? 'up' : x < -0.5 ? 'down' : 'flat';
+    return { m1: lab((f.mom1 || 0) + 0.5 * (f.emaSpread || 0)), m15: lab((f.mom15 || 0) + 0.5 * (f.ema15 || 0)) };
+  };
 
   // ---------- fees / EV ----------
   E.takerFee = (p, rate) => rate * p * (1 - p); // per share (Polymarket: fee = C × rate × p × (1−p))
