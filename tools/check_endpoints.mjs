@@ -19,7 +19,7 @@ function ws(name, url, subs, ms = 9000) {
     const done = (why) => { try { s.close(); } catch (e) {} rows.push([name, opened ? 'open' : 'no-open', `${n} msgs`, (why || '') + ' ' + first.slice(0, 110).replace(/\|/g, '/')]); res(); };
     const timer = setTimeout(() => done(''), ms);
     s.onopen = () => { opened = true; for (const m of subs) s.send(typeof m === 'string' ? m : JSON.stringify(m)); };
-    s.onmessage = (e) => { n++; const d = String(e.data); if (!first && d.length > 5 && !/heartbeat|pong|PONG|subscri/i.test(d)) first = d; };
+    s.onmessage = (e) => { n++; const d = String(e.data); if (!first && d.length > 5 && !/heartbeat|pong|PONG|subscri/i.test(d)) { first = d; try { const j = JSON.parse(d); if (j.payload) first = 'payload keys: ' + Object.keys(j.payload).join(',') + ' ' + JSON.stringify(j.payload).slice(0, 80); } catch (e) {} } };
     s.onerror = (e) => { if (!opened) { clearTimeout(timer); done('error ' + (e.message || '')); } };
   });
 }
