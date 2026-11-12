@@ -1,0 +1,16 @@
+name: Verify target capture against Polymarket
+on:
+  workflow_dispatch:
+    inputs:
+      windows: { description: 'How many 5-min windows to check', default: '2' }
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node tools/verify_ptb.mjs ${{ inputs.windows }} | tee -a "$GITHUB_STEP_SUMMARY"
