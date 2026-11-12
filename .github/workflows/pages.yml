@@ -1,0 +1,71 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Engine tests
+        run: node test/test_engine.js
+      - name: Committed build matches sources
+        run: python3 build.py --check
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble site (public files only)
+        run: |
+          mkdir -p _site/icons
+          cp index.html sw.js manifest.webmanifest .nojekyll _site/
+          cp icons/*.png _site/icons/
+          ls -la _site _site/icons
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the live site
+        env:
+          URL: ${{ needs.deploy.outputs.url }}
+        run: |
+          set -e
+          echo "Live URL: $URL"
+          for i in $(seq 1 20); do
+            code=$(curl -s -o page.html -w '%{http_code}' "$URL") || true
+            if [ "$code" = "200" ] && grep -q "BTC 5M Intelligence" page.html; then echo "index OK ($code)"; break; fi
+            echo "attempt $i: HTTP $code, waiting"; sleep 15
+          done
+          grep -q "BTC 5M Intelligence" page.html
+          for f in manifest.webmanifest sw.js icons/icon-192.png icons/icon-512.png icons/apple-touch-icon.png; do
+            c=$(curl -s -o /dev/null -w '%{http_code}' "$URL$f"); echo "$f -> $c"; [ "$c" = "200" ]
+          done
+          curl -sI "$URL" | grep -i '^content-type' 
+          echo "### Live site verified: $URL" >> "$GITHUB_STEP_SUMMARY"
