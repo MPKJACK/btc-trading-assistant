@@ -35,6 +35,7 @@ section{display:none}section.on{display:block}
 .rec.NT{border-color:var(--nt)}
 .recLabel{font-size:52px;font-weight:800;letter-spacing:1px;line-height:1}
 .UP .recLabel{color:var(--up)}.DOWN .recLabel{color:var(--dn)}.NT .recLabel{color:#9ca3af}
+.rec.CALL{border-style:dashed}.cUP .recLabel{color:var(--up)}.cDOWN .recLabel{color:var(--dn)}.cUP{border-color:rgba(34,197,94,.6)}.cDOWN{border-color:rgba(239,68,68,.6)}
 .action{font-size:18px;font-weight:700;margin-top:10px;line-height:1.3}.UP .action{color:#bbf7d0}.DOWN .action{color:#fecaca}.NT .action{color:#e5e7eb;font-weight:600;font-size:16px}
 #alertBanner{display:block;width:100%;margin-bottom:12px;background:#1e3a5f;color:#dbeafe}
 .prob{font-size:22px;font-weight:700;margin-top:8px}.prob small{font-size:13px;color:var(--mut);font-weight:500}
@@ -84,6 +85,7 @@ pre{white-space:pre-wrap;font:11px var(--mono);color:#cbd5e1;max-height:320px;ov
     <div class="action" id="action">Connecting…</div>
     <div class="prob" id="probLine">—</div>
     <div class="sub" id="confLine"></div>
+    <div class="sub" id="chartRead" style="margin-top:4px"></div>
     <div class="bar"><i id="strengthBar" style="width:0%"></i></div>
     <div class="reason" id="reason">Connecting to exchange feeds…</div>
     <ul class="gates" id="gates"></ul>
@@ -138,7 +140,7 @@ pre{white-space:pre-wrap;font:11px var(--mono);color:#cbd5e1;max-height:320px;ov
     <div class="sub" id="btStatus" style="margin-top:8px"></div>
   </div>
   <div id="btOut"></div>
-  <div class="card"><h3>Active live model</h3><div id="activeModel"></div><div class="btns" style="margin-top:8px"><button id="resetModel">Reset to volatility model</button></div></div>
+  <div class="card"><h3>Active live model</h3><div id="activeModel"></div><div class="btns" style="margin-top:8px"><button id="resetModel">Reset to default model</button></div></div>
 </section>
 
 <!-- SETTINGS -->

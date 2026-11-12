@@ -35,6 +35,7 @@ section{display:none}section.on{display:block}
 .rec.NT{border-color:var(--nt)}
 .recLabel{font-size:52px;font-weight:800;letter-spacing:1px;line-height:1}
 .UP .recLabel{color:var(--up)}.DOWN .recLabel{color:var(--dn)}.NT .recLabel{color:#9ca3af}
+.rec.CALL{border-style:dashed}.cUP .recLabel{color:var(--up)}.cDOWN .recLabel{color:var(--dn)}.cUP{border-color:rgba(34,197,94,.6)}.cDOWN{border-color:rgba(239,68,68,.6)}
 .action{font-size:18px;font-weight:700;margin-top:10px;line-height:1.3}.UP .action{color:#bbf7d0}.DOWN .action{color:#fecaca}.NT .action{color:#e5e7eb;font-weight:600;font-size:16px}
 #alertBanner{display:block;width:100%;margin-bottom:12px;background:#1e3a5f;color:#dbeafe}
 .prob{font-size:22px;font-weight:700;margin-top:8px}.prob small{font-size:13px;color:var(--mut);font-weight:500}
@@ -84,6 +85,7 @@ pre{white-space:pre-wrap;font:11px var(--mono);color:#cbd5e1;max-height:320px;ov
     <div class="action" id="action">Connecting…</div>
     <div class="prob" id="probLine">—</div>
     <div class="sub" id="confLine"></div>
+    <div class="sub" id="chartRead" style="margin-top:4px"></div>
     <div class="bar"><i id="strengthBar" style="width:0%"></i></div>
     <div class="reason" id="reason">Connecting to exchange feeds…</div>
     <ul class="gates" id="gates"></ul>
@@ -138,7 +140,7 @@ pre{white-space:pre-wrap;font:11px var(--mono);color:#cbd5e1;max-height:320px;ov
     <div class="sub" id="btStatus" style="margin-top:8px"></div>
   </div>
   <div id="btOut"></div>
-  <div class="card"><h3>Active live model</h3><div id="activeModel"></div><div class="btns" style="margin-top:8px"><button id="resetModel">Reset to volatility model</button></div></div>
+  <div class="card"><h3>Active live model</h3><div id="activeModel"></div><div class="btns" style="margin-top:8px"><button id="resetModel">Reset to default model</button></div></div>
 </section>
 
 <!-- SETTINGS -->
@@ -505,18 +507,19 @@ pre{white-space:pre-wrap;font:11px var(--mono);color:#cbd5e1;max-height:320px;ov
 'use strict';
 const E = window.Engine;
 const $ = (s) => document.querySelector(s);
-const APP_VERSION = 'app-1.1.0';
+const APP_VERSION = 'app-1.2.0';
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('btc5m:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('btc5m:' + k, JSON.stringify(v)); } catch (e) { diag('storage write failed: ' + e.message, 'warn'); } },
 };
 const DEFAULTS = {
-  minEdge: 0.04, marketWeight: 0.3, feeRate: 0.07, minFeeds: 2, maxDispersionBps: 10, minSecondsLeft: 15, volSpikeRatio: 3, microTilt: 0,
+  minEdge: 0.04, marketWeight: 0.3, feeRate: 0.07, minFeeds: 2, maxDispersionBps: 25, alwaysCall: true, minSecondsLeft: 15, volSpikeRatio: 3, microTilt: 0,
   autoPaper: true, stake: 10, sound: true, notify: false, alertMinStrength: 0, relayUrl: '',
   alerts: { strong: true, flip: true, invalid: true, vol: true, expiry: true },
   feeds: { coinbase: true, kraken: true, bitstamp: true, binanceus: true, chainlink: true, polymarket: true },
 };
 const cfg = Object.assign({}, DEFAULTS, LS.get('cfg', {}));
+if (!(cfg.cfgVersion >= 2)) { cfg.maxDispersionBps = 25; cfg.alwaysCall = true; cfg.cfgVersion = 2; } // migrate: old 10 bps gate was too tight
 cfg.alerts = Object.assign({}, DEFAULTS.alerts, cfg.alerts || {}); cfg.feeds = Object.assign({}, DEFAULTS.feeds, cfg.feeds || {});
 const saveCfg = () => LS.set('cfg', cfg);
 
@@ -656,11 +659,18 @@ function onChainlink(tMs, p) {
 }
 
 // ---------- composite price ----------
+// Composite = median of fresh USD exchanges. Binance.US trades against USDT (not dollars) and is thin, so it is
+// shown for reference only. A single exchange far from the others is flagged as an outlier and dropped, so one
+// bad quote can no longer block every call.
+const median = (a) => { const s = a.slice().sort((x, y) => x - y); return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
 function compositeMid() {
-  const vals = []; for (const id of ['coinbase', 'kraken', 'bitstamp', 'binanceus']) { const f = X[id]; if (f.fresh && f.mid > 0) vals.push({ id, p: f.mid }); }
-  if (!vals.length) return { p: NaN, n: 0, dispBps: 0, vals };
-  const s = vals.map(v => v.p).sort((a, b) => a - b), med = s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
-  return { p: med, n: vals.length, dispBps: s.length > 1 ? (s[s.length - 1] - s[0]) / med * 1e4 : 0, vals };
+  let vals = []; for (const id of ['coinbase', 'kraken', 'bitstamp']) { const f = X[id]; if (f.fresh && f.mid > 0) vals.push({ id, p: f.mid }); }
+  if (!vals.length) { const b = X.binanceus; if (b.fresh && b.mid > 0) vals.push({ id: 'binanceus', p: b.mid }); }
+  if (!vals.length) return { p: NaN, n: 0, dispBps: 0, vals, outliers: [] };
+  const outliers = [];
+  if (vals.length >= 3) { const m = median(vals.map(v => v.p)); vals = vals.filter(v => { const off = Math.abs(v.p / m - 1) * 1e4; if (off > 15) { outliers.push(v.id); return false; } return true; }); }
+  const ps = vals.map(v => v.p), med = median(ps);
+  return { p: med, n: vals.length, dispBps: ps.length > 1 ? (Math.max(...ps) - Math.min(...ps)) / med * 1e4 : 0, vals, outliers };
 }
 function priceAgo(series, sec) { const t = now() - sec * 1000; for (let i = series.length - 1; i >= 0; i--) if (series[i].t <= t) return series[i].p; return NaN; }
 
@@ -820,11 +830,23 @@ function analyze() {
   const flow = flowStats(60), obi = bookImb();
   const microScore = (isFinite(flow.imb) ? flow.imb : 0) * 0.5 + (isFinite(obi) ? obi : 0) * 0.5;
   const freshCount = comp.n + (clFresh ? 1 : 0);
+  // what matters for settlement is Chainlink; check exchanges against it (not against each other's noise)
+  const clVsEx = (clFresh && comp.p > 0) ? Math.abs(cl.price - (comp.p + (basis || 0))) / comp.p * 1e4 : 0;
+  const agreeBps = Math.max(comp.dispBps, clVsEx);
   const market = marketQuotes();
-  Object.assign(st, { target: TG.value, targetVerified: TG.verified && TG.win === MK.tStart, S, sSrc, comp: compNow, tRem, sigma, f, model: activeModel, market, freshCount, dispersionBps: comp.dispBps, tickVolRatio, conflict, microScore, m15, m60, flow, obi, closes, cAll });
+  Object.assign(st, { target: TG.value, targetVerified: TG.verified && TG.win === MK.tStart, S, sSrc, comp: compNow, tRem, sigma, f, model: activeModel, market, freshCount, dispersionBps: agreeBps, outliers: comp.outliers, tickVolRatio, conflict, microScore, m15, m60, flow, obi, closes, cAll });
   const d = E.decide(st, cfg);
   // hysteresis: keep an active call unless the edge falls below half the entry threshold or a hard gate fires
   if (shown.side && d.rec === 'NO TRADE' && d.side === shown.side && d.best && d.best.evPerDollar >= cfg.minEdge / 2 && d.gates.every(g => /edge/i.test(g))) { d.rec = shown.side; d.held = true; }
+  // Always-on call: when the only blockers are "soft" (price not attractive, feeds disagree, choppy, conflict),
+  // still give the direction the analysis favors. Hard blockers (no target, no live price, no volatility) still WAIT.
+  d.call = null;
+  if (isFinite(d.pUp) && st.targetVerified && st.S > 0 && st.sigma > 0 && st.tRem > 0) {
+    d.call = d.pUp >= 0.5 ? 'UP' : 'DOWN'; d.pCall = Math.max(d.pUp, d.pDown);
+    d.callMaxPay = E.maxPrice(d.pCall, cfg.minEdge, cfg.feeRate);
+    d.cautions = d.rec === 'NO TRADE' ? d.gates.filter(g => !/Best edge/.test(g)) : [];
+  }
+  d.chart = st.f ? E.chartRead(st.f) : null;
   lastDecision = d; d.text = E.explain(d, st);
   handleSignalEvents(d);
   logSnapshots(d);
@@ -917,7 +939,10 @@ function toast(msg, kind) { const el = $('#toast'); el.textContent = msg; el.sty
 
 // ---------- model selection ----------
 let activeModel = E.defaultModel();
-(function loadModel() { const saved = LS.get('model', null); if (saved && saved.fit) { activeModel = E.makeLogistic(saved.fit, saved.name); activeModel.version = saved.version; activeModel.meta = saved.meta; } else activeModel.version = 'vol-1'; })();
+// Default: pre-trained on real data by .github/workflows/research.yml (tools/real_backtest.mjs)
+const PRETRAINED = {"fit": {"b0": -0.047612474361572836, "w": [2.405915134742885, -0.07092636341346012, -0.04155198069081413, -0.027698993227202758], "mu": [-0.03046315481131931, -0.03000609160002358, -0.032100144023302725, -0.022809786038333373], "sd": [1.3024369350001026, 0.9568221923774142, 1.0035263211841026, 0.23005414157922743], "names": ["z", "mom15", "ema15", "rsi15"], "n": 34040}, "name": "Distance + 15-min chart (trained on 30 days of real BTC data)", "version": "l15m-2026-11-12", "meta": "Walk-forward out-of-sample log loss 0.4741 vs 0.4747 for distance only (30 days Coinbase BTC-USD, Oct 13 - Nov 12 2026). The chart adds only a small amount; distance to target and time left drive most of the probability."};
+function useModel(m) { activeModel = E.makeLogistic(m.fit, m.name); activeModel.version = m.version; activeModel.meta = m.meta; }
+(function loadModel() { const saved = LS.get('model', null); useModel(saved && saved.fit ? saved : PRETRAINED); })();
 
 // ---------- formatting ----------
 const usd = (v, d = 2) => isFinite(v) ? '$' + v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '—';
@@ -943,9 +968,17 @@ function plainReason(g, d) {
     return `No good deal. ${d.side} is ${pct(p)} likely, but costs ${cents(ask)}. It's worth it at ${cents(d.maxPay)} or less.`; }
   return g;
 }
+const arrow = (x) => x === 'up' ? '↑' : x === 'down' ? '↓' : '→';
+function callText(d) {
+  const ask = d.call === 'UP' ? st.market.upAsk : st.market.downAsk;
+  if (!(ask > 0)) return `Leaning ${d.call} (${pct(d.pCall)}). No Polymarket price yet.`;
+  if (ask <= d.callMaxPay) return `Leaning ${d.call} (${pct(d.pCall)}) at ${cents(ask)}. Price is OK, but conditions are shaky (see cautions).`;
+  return `Leaning ${d.call} (${pct(d.pCall)}), but ${cents(ask)} is too expensive. Only worth it at ${cents(d.callMaxPay)} or less.`;
+}
 function actionText(d) {
   if (d.rec === 'UP' || d.rec === 'DOWN') { const ask = d.rec === 'UP' ? st.market.upAsk : st.market.downAsk;
-    return `Buy ${d.rec} now at ${cents(ask)}. Don't pay more than ${cents(d.maxPay)}.`; }
+    const pSide = d.rec === 'UP' ? d.pUp : d.pDown, mp = d.held ? E.maxPrice(pSide, cfg.minEdge / 2, cfg.feeRate) : d.maxPay;
+    return `Buy ${d.rec} now at ${cents(ask)}. Don't pay more than ${cents(mp)}.`; }
   return d.gates.length ? plainReason(d.gates[0], d) : 'Waiting for data…';
 }
 
@@ -959,11 +992,14 @@ function renderLive() {
   const card = $('#recCard'); const cls = d.rec === 'UP' ? 'UP' : d.rec === 'DOWN' ? 'DOWN' : 'NT';
   card.className = 'card rec ' + cls;
   $('#mktTitle').textContent = MK.title || 'BTC 5M';
-  $('#recLabel').textContent = d.rec === 'NO TRADE' ? 'WAIT' : 'BUY ' + d.rec;
-  $('#action').textContent = actionText(d);
+  const callMode = cfg.alwaysCall && d.rec === 'NO TRADE' && d.call;
+  if (callMode) card.className = 'card rec CALL ' + (d.call === 'UP' ? 'cUP' : 'cDOWN');
+  $('#recLabel').textContent = d.rec !== 'NO TRADE' ? 'BUY ' + d.rec : callMode ? d.call : 'WAIT';
+  $('#action').textContent = callMode ? callText(d) : actionText(d);
+  $('#chartRead').innerHTML = d.chart ? `1-min chart <b class="${d.chart.m1 === 'up' ? 'upc' : d.chart.m1 === 'down' ? 'dnc' : ''}">${arrow(d.chart.m1)} ${d.chart.m1}</b> · 15-min chart <b class="${d.chart.m15 === 'up' ? 'upc' : d.chart.m15 === 'down' ? 'dnc' : ''}">${arrow(d.chart.m15)} ${d.chart.m15}</b>` : '';
   if (isFinite(d.pUp)) {
     const ps = d.rec === 'DOWN' ? d.pDown : d.rec === 'UP' ? d.pUp : Math.max(d.pUp, d.pDown);
-    const lbl = d.rec === 'NO TRADE' ? (d.pUp >= 0.5 ? 'UP' : 'DOWN') + ' ' : d.rec + ' ';
+    const lbl = (d.rec === 'NO TRADE' ? (d.pUp >= 0.5 ? 'UP' : 'DOWN') : d.rec) + ' ';
     const askSide = d.rec === 'UP' ? st.market.upAsk : d.rec === 'DOWN' ? st.market.downAsk : NaN;
     $('#probLine').innerHTML = `${lbl}${pct(ps)} <small>chance (estimate)</small>` + (isFinite(askSide) && ps < 0.5 ? '<div class="sub">Less likely than not, but the price is low enough to be worth it.</div>' : '');
     $('#confLine').textContent = `UP ${pct(d.pUp)} · DOWN ${pct(d.pDown)} · confidence ${d.conf}${d.held ? ' · holding' : ''}` + (d.best ? ` · edge ${(d.best.evPerDollar * 100).toFixed(1)}%` : '');
@@ -971,7 +1007,7 @@ function renderLive() {
   $('#strengthBar').style.width = (d.rec === 'NO TRADE' ? 0 : d.strength) + '%';
   $('#strengthBar').style.background = cls === 'UP' ? 'var(--up)' : cls === 'DOWN' ? 'var(--dn)' : 'var(--nt)';
   $('#reason').textContent = d.text || d.reason || '…';
-  $('#gates').innerHTML = d.rec === 'NO TRADE' ? d.gates.slice(1, 4).map(g => `<li>${esc(plainReason(g, d))}</li>`).join('') : '';
+  $('#gates').innerHTML = callMode ? (d.cautions || []).slice(0, 3).map(g => `<li>Caution: ${esc(plainReason(g, d))}</li>`).join('') : d.rec === 'NO TRADE' ? d.gates.slice(1, 4).map(g => `<li>${esc(plainReason(g, d))}</li>`).join('') : '';
   $('#countdown').textContent = mmss(st.tRem);
   $('#countdown').style.color = st.tRem < 30 ? 'var(--warn)' : '';
   $('#target').textContent = usd(st.target);
@@ -1003,7 +1039,7 @@ function renderSignals() {
   const comp = compositeMid();
   $('#feedsTbl').innerHTML = '<table><tr><th>Feed</th><th>Price</th><th>Age</th><th>Msgs</th><th>State</th></tr>' + FEED_DEFS.map(f => { const F = X[f.id]; const age = F.priceMs ? ((now() - F.priceMs) / 1000).toFixed(1) + 's' : '—';
     const px = f.pm ? `${cents(MK.up.ask)}/${cents(MK.down.ask)}` : fx(F.mid, 2);
-    return `<tr><td>${f.name}</td><td>${px}</td><td class="${F.fresh ? '' : 'wc'}">${age}</td><td>${F.msgs}</td><td>${F.status}${F.reconnects ? ' ↻' + F.reconnects : ''}</td></tr>`; }).join('') + '</table>';
+    return `<tr><td>${f.name}${(st.outliers || []).includes(f.id) ? ' <span class="badge warn">outlier</span>' : ''}${f.id === 'binanceus' ? ' <span class="badge">ref</span>' : ''}</td><td>${px}</td><td class="${F.fresh ? '' : 'wc'}">${age}</td><td>${F.msgs}</td><td>${F.status}${F.reconnects ? ' ↻' + F.reconnects : ''}</td></tr>`; }).join('') + '</table>';
   $('#feedSummary').innerHTML = `Composite (median of ${comp.n} fresh): ${usd(comp.p)} · spread across exchanges ${fx(comp.dispBps, 1)} bps · Chainlink − exchanges basis ${basis === null ? '—' : (basis >= 0 ? '+' : '') + basis.toFixed(2)} · clock offset ${clockOffset} ms`;
   const f = st.f || {}; const contrib = (lastDecision && lastDecision.contributions) || [];
   const cm = Object.fromEntries(contrib.map(c => [c.name, c.v]));
@@ -1059,7 +1095,7 @@ function renderSettings() {
   const num = (key, label, step, mult = 1, suffix = '') => `<div class="row"><span class="k">${label}</span><span><input data-k="${key}" data-m="${mult}" type="number" step="${step}" value="${+(cfg[key] * mult).toFixed(4)}">${suffix}</span></div>`;
   const chk = (path, label) => { const [a, b] = path.split('.'); const v = b ? cfg[a][b] : cfg[a]; return `<div class="row"><span class="k">${label}</span><input type="checkbox" data-c="${path}" ${v ? 'checked' : ''}></div>`; };
   if (!$('#setDecision').dataset.built) {
-    $('#setDecision').innerHTML = num('minEdge', 'Min expected edge (%)', 0.5, 100) + num('marketWeight', 'Weight on market price (%)', 5, 100) + num('feeRate', 'Taker fee rate (Polymarket crypto: 0.07)', 0.01) +
+    $('#setDecision').innerHTML = chk('alwaysCall', 'Always show a direction (UP/DOWN)') + num('minEdge', 'Min expected edge (%)', 0.5, 100) + num('marketWeight', 'Weight on market price (%)', 5, 100) + num('feeRate', 'Taker fee rate (Polymarket crypto: 0.07)', 0.01) +
       num('minFeeds', 'Min fresh price feeds', 1) + num('maxDispersionBps', 'Max exchange disagreement (bps)', 1) + num('minSecondsLeft', 'No trade under (sec left)', 5) +
       num('volSpikeRatio', 'Vol-spike gate (× normal)', 0.5) + num('microTilt', 'Micro-tilt (unvalidated, logit units)', 0.1) +
       '<div class="sub" style="margin-top:6px">Market weight blends the model with the market\'s own probability before edge is computed. 0% trusts the model fully; higher values are more conservative.</div>';
@@ -1152,7 +1188,7 @@ $('#saveMkt').onclick = () => { const u = parseFloat($('#inUp').value) / 100, d 
 $('#paperUp').onclick = () => paperBuy('UP', false); $('#paperDn').onclick = () => paperBuy('DOWN', false);
 $('#btnPip').onclick = togglePip;
 $('#runBt').onclick = runBacktest;
-$('#resetModel').onclick = () => { LS.set('model', null); activeModel = E.defaultModel(); activeModel.version = 'vol-1'; renderActiveModel(); toast('Using volatility model'); };
+$('#resetModel').onclick = () => { LS.set('model', null); useModel(PRETRAINED); renderActiveModel(); toast('Using the default chart model'); };
 function csv() { const cols = ['ts', 'kind', 'slug', 'tRem', 'target', 'targetSrc', 'S', 'pUp', 'pModel', 'pMkt', 'upAsk', 'downAsk', 'rec', 'edge', 'conf', 'strength', 'model', 'engine', 'endPrice', 'outcome', 'outcomeSrc'];
   return cols.join(',') + '\n' + preds.map(p => cols.map(c => { let v = p[c]; if (c === 'ts') v = new Date(v).toISOString(); return v == null ? '' : String(v).replace(/,/g, ';'); }).join(',')).join('\n'); }
 $('#exportCsv').onclick = () => { try { const b = new Blob([csv()], { type: 'text/csv' }), a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'btc5m-predictions.csv'; document.body.appendChild(a); a.click(); a.remove(); } catch (e) { toast('Download blocked; use Copy JSON', 'warn'); } };
