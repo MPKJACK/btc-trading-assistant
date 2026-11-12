@@ -30,6 +30,12 @@ try { const ev = (await (await fetch(`https://gamma-api.polymarket.com/events?sl
   const keys = Object.keys(ev).concat(Object.keys(m)); rows.push(['Gamma fields', '', '', `outcomes=${m.outcomes} feesEnabled=${m.feesEnabled} ptbKey=${keys.filter(k => /price|open|start/i.test(k)).join('/')}`]);
   const meta = ev.eventMetadata || m.eventMetadata; if (meta) rows.push(['Gamma eventMetadata', '', '', JSON.stringify(meta).slice(0, 120)]);
 } catch (e) { rows.push(['Gamma parse', 'ERR', '', e.message]); }
+{ const iso = (t) => new Date(t * 1000).toISOString();
+  for (const [lbl, st] of [['open window', t5], ['previous window', t5 - 300]]) {
+    const u = `https://polymarket.com/api/crypto/crypto-price?symbol=BTC&eventStartTime=${encodeURIComponent(iso(st))}&variant=fiveminute&endDate=${encodeURIComponent(iso(st + 300))}`;
+    try { const r = await fetch(u, { headers: { Origin: ORIGIN } }); const txt = await r.text();
+      rows.push([`PM crypto-price (${lbl})`, r.status, r.headers.get('access-control-allow-origin') ? 'CORS ' + r.headers.get('access-control-allow-origin') : 'NO CORS header', txt.slice(0, 140).replace(/\|/g, '/')]);
+    } catch (e) { rows.push([`PM crypto-price (${lbl})`, 'ERR', '', e.message]); } } }
 await rest('Coinbase candles', `https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=60`);
 await rest('Binance.US klines', `https://api.binance.us/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=5`);
 await ws('Coinbase WS', 'wss://ws-feed.exchange.coinbase.com', [{ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['ticker', 'matches', 'heartbeat'] }]);
