@@ -34,7 +34,9 @@ section{display:none}section.on{display:block}
 .rec.DOWN{border-color:var(--dn);background:linear-gradient(180deg,rgba(239,68,68,.14),var(--card) 70%)}
 .rec.NT{border-color:var(--nt)}
 .recLabel{font-size:52px;font-weight:800;letter-spacing:1px;line-height:1}
-.UP .recLabel{color:var(--up)}.DOWN .recLabel{color:var(--dn)}.NT .recLabel{color:#9ca3af;font-size:40px}
+.UP .recLabel{color:var(--up)}.DOWN .recLabel{color:var(--dn)}.NT .recLabel{color:#9ca3af}
+.action{font-size:18px;font-weight:700;margin-top:10px;line-height:1.3}.UP .action{color:#bbf7d0}.DOWN .action{color:#fecaca}.NT .action{color:#e5e7eb;font-weight:600;font-size:16px}
+#alertBanner{display:block;width:100%;margin-bottom:12px;background:#1e3a5f;color:#dbeafe}
 .prob{font-size:22px;font-weight:700;margin-top:8px}.prob small{font-size:13px;color:var(--mut);font-weight:500}
 .sub{color:var(--mut);font-size:13px}
 .row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
@@ -75,9 +77,11 @@ pre{white-space:pre-wrap;font:11px var(--mono);color:#cbd5e1;max-height:320px;ov
 <main>
 <!-- LIVE -->
 <section id="tab-live" class="on">
+  <button id="alertBanner">🔔 Tap to turn on buy alerts</button>
   <div class="card rec NT" id="recCard">
     <div class="sub" id="mktTitle">Waiting for market…</div>
-    <div class="recLabel" id="recLabel">NO TRADE</div>
+    <div class="recLabel" id="recLabel">WAIT</div>
+    <div class="action" id="action">Connecting…</div>
     <div class="prob" id="probLine">—</div>
     <div class="sub" id="confLine"></div>
     <div class="bar"><i id="strengthBar" style="width:0%"></i></div>
@@ -92,8 +96,7 @@ pre{white-space:pre-wrap;font:11px var(--mono);color:#cbd5e1;max-height:320px;ov
       <div class="tile"><div class="k">Polymarket ask</div><div class="v"><span class="upc" id="upAsk">—</span> / <span class="dnc" id="dnAsk">—</span></div><div class="sub" id="mktSrc">UP / DOWN</div></div>
     </div>
     <div class="btns" style="margin-top:10px">
-      <button id="btnConfirm">✓ Target matches Polymarket</button>
-      <button id="btnEditTarget">Edit</button>
+      <button id="btnEditTarget">Correct target (rarely needed)</button>
     </div>
     <div class="editrow" id="editTarget"><input id="inTarget" inputmode="decimal" placeholder="71614.32" style="flex:1"><button class="pri" id="saveTarget">Save</button></div>
     <div class="editrow" id="editMkt"><input id="inUp" inputmode="decimal" placeholder="UP ¢" style="flex:1"><input id="inDn" inputmode="decimal" placeholder="DOWN ¢" style="flex:1"><button class="pri" id="saveMkt">Set</button></div>

@@ -62,4 +62,6 @@ d = E.decide(Object.assign({}, base, { freshCount: 1, market: { upAsk: 0.6, down
 ok(d.rec === 'NO TRADE', 'stale feeds -> NO TRADE');
 d = E.decide(Object.assign({}, base, { tRem: 8, market: { upAsk: 0.6, downAsk: 0.42 } }), cfg);
 ok(d.rec === 'NO TRADE', 'too little time -> NO TRADE');
+const mp = E.maxPrice(0.7, 0.04, 0.07); const evAt = E.ev(0.7, mp, 0.07);
+ok(Math.abs(evAt.evPerDollar - 0.04) < 1e-6, 'maxPrice: buying at the max price leaves exactly the minimum edge (' + (mp * 100).toFixed(2) + 'c)');
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED'); process.exit(fails ? 1 : 0);

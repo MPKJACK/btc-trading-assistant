@@ -18,7 +18,7 @@
       else if (u.includes('kraken') && m.params && m.params.channel === 'trade') this.every(700, () => this.emit({ channel: 'trade', type: 'update', data: [{ price: P, qty: Math.random() * 0.5, side: Math.random() < .5 ? 'buy' : 'sell', timestamp: iso() }] }));
       else if (u.includes('bitstamp') && m.data && m.data.channel === 'order_book_btcusd') this.every(1000, () => this.emit({ event: 'data', channel: 'order_book_btcusd', data: { bids: [...Array(20)].map((_, i) => [String(P - 1 - i), String(Math.random())]), asks: [...Array(20)].map((_, i) => [String(P + 1 + i), String(Math.random())]) } }));
       else if (u.includes('ws-live-data')) {
-        const t0 = tStart() * 1000; const hist = []; for (let t = t0; t <= Date.now(); t += 1000) hist.push({ timestamp: t, value: P + 2 + (Math.random() - .5) });
+        const t0 = tStart() * 1000; const hist = []; if (!window.__noHist) for (let t = t0; t <= Date.now(); t += 1000) hist.push({ timestamp: t, value: P + 2 + (Math.random() - .5) });
         this.emit({ topic: 'crypto_prices_chainlink', type: 'subscribe', timestamp: Date.now(), payload: { symbol: 'btc/usd', data: hist } });
         this.every(1000, () => this.emit({ topic: 'crypto_prices_chainlink', type: 'update', timestamp: Date.now(), payload: { symbol: 'btc/usd', timestamp: Math.floor(Date.now() / 1000) * 1000, value: P + 2 } }));
       }

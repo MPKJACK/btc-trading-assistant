@@ -2,14 +2,14 @@
 'use strict';
 const E = window.Engine;
 const $ = (s) => document.querySelector(s);
-const APP_VERSION = 'app-1.0.0';
+const APP_VERSION = 'app-1.1.0';
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('btc5m:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('btc5m:' + k, JSON.stringify(v)); } catch (e) { diag('storage write failed: ' + e.message, 'warn'); } },
 };
 const DEFAULTS = {
   minEdge: 0.04, marketWeight: 0.3, feeRate: 0.07, minFeeds: 2, maxDispersionBps: 10, minSecondsLeft: 15, volSpikeRatio: 3, microTilt: 0,
-  autoPaper: true, stake: 10, sound: false, notify: false, alertMinStrength: 25,
+  autoPaper: true, stake: 10, sound: true, notify: false, alertMinStrength: 0, relayUrl: '',
   alerts: { strong: true, flip: true, invalid: true, vol: true, expiry: true },
   feeds: { coinbase: true, kraken: true, bitstamp: true, binanceus: true, chainlink: true, polymarket: true },
 };
@@ -267,15 +267,22 @@ function marketQuotes() {
 
 // ---------- target (price to beat) ----------
 function setTarget(v, src, verified, win) { TG.value = v; TG.src = src; TG.verified = verified; TG.win = win; diag(`Target ${v.toFixed(2)} from ${src}${verified ? '' : ' (unverified)'}`); }
+// Polymarket's price to beat is the Chainlink BTC/USD report stamped exactly at the window-open second.
+// The app takes that exact report automatically. If it wasn't running then (opened mid-window), it asks the
+// optional relay for Polymarket's official value; otherwise it waits for the next window. It never estimates.
+let relayTry = 0;
 function tryCaptureTarget() {
   const w = MK.tStart; if (!w || (TG.win === w && TG.verified)) return;
-  const t0 = w * 1000; const hit = clTicks.find(x => x.t >= t0 && x.t <= t0 + 1000);
-  if (hit) { setTarget(hit.p, 'Chainlink @ open', true, w); return; }
-  if (TG.win !== w || !(TG.value > 0)) {
-    const c = candles.find(x => x.t === w) || (cur && cur.t === w ? cur : null);
-    if (c) setTarget(c.o + (basis || 0), 'Coinbase open (estimate, confirm)', false, w);
-  }
+  const exact = clTicks.find(x => x.t === w * 1000);
+  if (exact) { setTarget(exact.p, 'Chainlink at window open', true, w); return; }
+  if (cfg.relayUrl && Date.now() - relayTry > 8000) { relayTry = Date.now(); fetchRelayTarget(w); }
 }
+async function fetchRelayTarget(w) {
+  try { const r = await fetch(relayCryptoUrl(w)); if (!r.ok) throw new Error('HTTP ' + r.status); const j = await r.json();
+    if (MK.tStart === w && j.openPrice > 1000 && !(TG.win === w && TG.verified)) setTarget(+j.openPrice, 'Polymarket official (relay)', true, w);
+  } catch (e) { diag('Relay target failed: ' + e.message, 'warn'); }
+}
+function relayCryptoUrl(w) { const iso = (t) => new Date(t * 1000).toISOString(); return cfg.relayUrl.replace(/\/$/, '') + `/crypto-price?symbol=BTC&eventStartTime=${encodeURIComponent(iso(w))}&variant=fiveminute&endDate=${encodeURIComponent(iso(w + 300))}`; }
 
 // ---------- live analysis loop ----------
 let lastDecision = null, shown = { rec: 'NO TRADE', side: null }, lastSpikeAlert = 0;
@@ -345,6 +352,8 @@ function resolveWindow(win) {
   settlePapers(); persist(); diag(`Window ${win} resolved ${endP > 0 ? (src + ' ' + endP.toFixed(2)) : 'pending'}`);
 }
 async function confirmOfficial(win) {
+  if (cfg.relayUrl) { try { const j = await (await fetch(relayCryptoUrl(win))).json(); if (j.completed && j.closePrice > 0 && j.openPrice > 0) { const out = j.closePrice >= j.openPrice ? 'UP' : 'DOWN';
+    const r = windowRecords(win); for (const x of r.p.concat(r.t)) { x.outcome = out; x.outcomeSrc = 'official'; x.endPrice = j.closePrice; } settlePapers(); persist(); return; } } catch (e) { diag('Relay result failed: ' + e.message, 'warn'); } }
   try { const ev = await fetchGammaEvent(`btc-updown-5m-${win}`); const m = ev && ev.markets && ev.markets[0]; if (!m) return;
     const outs = parseMaybeJSON(m.outcomes), px = parseMaybeJSON(m.outcomePrices); if (!m.closed || !Array.isArray(px)) return;
     const iUp = outs.findIndex(o => /up/i.test(o)); const upWon = +px[iUp] > 0.99, dnWon = +px[iUp] < 0.01; if (!upWon && !dnWon) return;
@@ -382,12 +391,13 @@ function handleSignalEvents(d) {
   if (act && prev.rec !== d.rec) {
     preds.push(snapshot(d, 'signal')); persist();
     const strong = d.strength >= cfg.alertMinStrength;
-    if (prev.side && prev.side !== d.rec && cfg.alerts.flip) alertUser(`Signal flipped to ${d.rec} (${pct(d.rec === 'UP' ? d.pUp : d.pDown)})`, d.rec === 'UP' ? 'up' : 'dn', true);
-    else if (strong && cfg.alerts.strong) alertUser(`${d.rec} opportunity: ${pct(d.rec === 'UP' ? d.pUp : d.pDown)} est., edge ${(d.best.evPerDollar * 100).toFixed(1)}%`, d.rec === 'UP' ? 'up' : 'dn');
+    const msg = `BUY ${d.rec} now: ${actionText(d).replace(/^Buy \w+ now /, '')}`;
+    if (prev.side && prev.side !== d.rec && cfg.alerts.flip) alertUser('Switched. ' + msg, d.rec === 'UP' ? 'up' : 'dn', true);
+    else if (strong && cfg.alerts.strong) alertUser(msg, d.rec === 'UP' ? 'up' : 'dn', true);
     if (cfg.autoPaper && !papers.some(p => p.win === MK.tStart && p.auto)) paperBuy(d.rec, true);
     shown = { rec: d.rec, side: d.rec };
   } else if (!act && prev.side) {
-    if (cfg.alerts.invalid) alertUser(`${prev.side} call no longer valid: ${d.reason}`, 'warn');
+    if (cfg.alerts.invalid) alertUser(`Stop: don't buy ${prev.side} anymore. ${plainReason(d.reason, d)}`, 'warn', true);
     shown = { rec: 'NO TRADE', side: null };
   }
   if (cfg.alerts.expiry && st.tRem <= 30 && st.tRem > 25 && !markDone.has('exp') && markDone.add('exp') && papers.some(p => p.win === MK.tStart && !p.outcome)) alertUser('Market expires in 30s', 'warn', true);
@@ -415,6 +425,27 @@ const fx = (v, d = 2) => isFinite(v) ? (+v).toFixed(d) : '—';
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const row = (k, v, cls = '') => `<div class="row"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
 
+// ---------- plain-English instructions ----------
+function plainReason(g, d) {
+  if (/Target price not/.test(g)) return cfg.relayUrl ? 'Getting the target price from Polymarket…' : `Opened mid-window. The target locks automatically when the next window starts (in ${mmss(st.tRem)}).`;
+  if (/No active market/.test(g)) return 'Waiting for the next market to open.';
+  if (/fresh price feed/.test(g)) return 'Price feeds are reconnecting. No call until live prices are back.';
+  if (/disagree by/.test(g)) return 'Exchanges disagree on the price right now. Too risky to call.';
+  if (/Volatility not yet/.test(g)) return 'Still measuring volatility (needs a minute of data).';
+  if (/Under \d+s left/.test(g)) return 'Too close to expiry to act.';
+  if (/Volatility spike/.test(g)) return 'BTC is jumping around too much right now. Too unpredictable.';
+  if (/UP\/DOWN prices unavailable/.test(g)) return 'Waiting for Polymarket UP/DOWN prices.';
+  if (/momentum disagree/.test(g)) return 'Short-term signals conflict. Sitting this one out.';
+  if (/Best edge/.test(g) && d && d.side) { const ask = d.side === 'UP' ? st.market.upAsk : st.market.downAsk, p = d.side === 'UP' ? d.pUp : d.pDown;
+    return `No good deal. ${d.side} is ${pct(p)} likely, but costs ${cents(ask)}. It's worth it at ${cents(d.maxPay)} or less.`; }
+  return g;
+}
+function actionText(d) {
+  if (d.rec === 'UP' || d.rec === 'DOWN') { const ask = d.rec === 'UP' ? st.market.upAsk : st.market.downAsk;
+    return `Buy ${d.rec} now at ${cents(ask)}. Don't pay more than ${cents(d.maxPay)}.`; }
+  return d.gates.length ? plainReason(d.gates[0], d) : 'Waiting for data…';
+}
+
 // ---------- rendering ----------
 let tab = 'live';
 function renderDots() {
@@ -425,24 +456,24 @@ function renderLive() {
   const card = $('#recCard'); const cls = d.rec === 'UP' ? 'UP' : d.rec === 'DOWN' ? 'DOWN' : 'NT';
   card.className = 'card rec ' + cls;
   $('#mktTitle').textContent = MK.title || 'BTC 5M';
-  $('#recLabel').textContent = d.rec;
+  $('#recLabel').textContent = d.rec === 'NO TRADE' ? 'WAIT' : 'BUY ' + d.rec;
+  $('#action').textContent = actionText(d);
   if (isFinite(d.pUp)) {
     const ps = d.rec === 'DOWN' ? d.pDown : d.rec === 'UP' ? d.pUp : Math.max(d.pUp, d.pDown);
-    const lbl = d.rec === 'NO TRADE' ? (d.pUp >= 0.5 ? 'UP' : 'DOWN') + ' ' : '';
+    const lbl = d.rec === 'NO TRADE' ? (d.pUp >= 0.5 ? 'UP' : 'DOWN') + ' ' : d.rec + ' ';
     const askSide = d.rec === 'UP' ? st.market.upAsk : d.rec === 'DOWN' ? st.market.downAsk : NaN;
-    $('#probLine').innerHTML = `${lbl}${pct(ps)} <small>estimated probability${isFinite(askSide) ? ` · priced ${cents(askSide)}` : ''}</small>` + (isFinite(askSide) && ps < 0.5 ? '<div class="sub">Value call: less likely than not, but cheap relative to the estimate.</div>' : '');
+    $('#probLine').innerHTML = `${lbl}${pct(ps)} <small>chance (estimate)</small>` + (isFinite(askSide) && ps < 0.5 ? '<div class="sub">Less likely than not, but the price is low enough to be worth it.</div>' : '');
     $('#confLine').textContent = `UP ${pct(d.pUp)} · DOWN ${pct(d.pDown)} · confidence ${d.conf}${d.held ? ' · holding' : ''}` + (d.best ? ` · edge ${(d.best.evPerDollar * 100).toFixed(1)}%` : '');
   } else { $('#probLine').textContent = '—'; $('#confLine').textContent = ''; }
   $('#strengthBar').style.width = (d.rec === 'NO TRADE' ? 0 : d.strength) + '%';
   $('#strengthBar').style.background = cls === 'UP' ? 'var(--up)' : cls === 'DOWN' ? 'var(--dn)' : 'var(--nt)';
   $('#reason').textContent = d.text || d.reason || '…';
-  $('#gates').innerHTML = d.rec === 'NO TRADE' ? d.gates.slice(0, 4).map(g => `<li>${esc(g)}</li>`).join('') : '';
+  $('#gates').innerHTML = d.rec === 'NO TRADE' ? d.gates.slice(1, 4).map(g => `<li>${esc(plainReason(g, d))}</li>`).join('') : '';
   $('#countdown').textContent = mmss(st.tRem);
   $('#countdown').style.color = st.tRem < 30 ? 'var(--warn)' : '';
   $('#target').textContent = usd(st.target);
   const tv = st.targetVerified;
-  $('#targetSrc').innerHTML = st.target > 0 ? `<span class="badge ${tv ? 'ok' : 'warn'}">${tv ? 'VERIFIED' : 'UNVERIFIED'}</span> ${esc(TG.src)}` : '<span class="badge bad">MISSING</span> enter it from Polymarket';
-  $('#btnConfirm').style.display = st.target > 0 && !tv ? '' : 'none';
+  $('#targetSrc').innerHTML = st.target > 0 ? `<span class="badge ${tv ? 'ok' : 'warn'}">${tv ? 'VERIFIED' : 'UNVERIFIED'}</span> ${esc(TG.src)}` : '<span class="badge warn">WAITING</span> locks at next window';
   $('#spot').textContent = usd(st.S);
   $('#sSrc').textContent = st.sSrc ? st.sSrc.split(' ')[0].toUpperCase() : '';
   const diff = st.S - st.target; $('#diff').innerHTML = isFinite(diff) ? `<span class="${diff >= 0 ? 'upc' : 'dnc'}">${diff >= 0 ? '+' : '−'}${usd(Math.abs(diff))}</span> vs target` : '';
@@ -532,8 +563,10 @@ function renderSettings() {
     $('#setAlerts').innerHTML = chk('autoPaper', 'Auto paper-trade first signal per window') + num('stake', 'Paper stake ($)', 1) + num('alertMinStrength', 'Alert min signal strength (0–100)', 5) +
       chk('alerts.strong', 'Alert: strong UP/DOWN') + chk('alerts.flip', 'Alert: direction flips') + chk('alerts.invalid', 'Alert: call becomes invalid') + chk('alerts.vol', 'Alert: volatility spike') + chk('alerts.expiry', 'Alert: 30s to expiry (open paper trade)') +
       chk('sound', 'Sound') + chk('notify', 'System notifications (Home Screen app only)');
-    $('#setFeeds').innerHTML = FEED_DEFS.map(f => chk('feeds.' + f.id, f.name)).join('') + '<div class="sub" style="margin-top:6px">Binance.com blocks US users, so Binance.US is used. Chainlink is the settlement source for these markets; exchanges are the cross-check.</div>';
+    $('#setFeeds').innerHTML = FEED_DEFS.map(f => chk('feeds.' + f.id, f.name)).join('') + '<div class="sub" style="margin-top:6px">Binance.com blocks US users, so Binance.US is used. Chainlink is the settlement source for these markets; exchanges are the cross-check.</div>' +
+      `<div class="row"><span class="k">Relay URL (optional)</span><input id="relayUrl" style="width:60%;text-align:left" placeholder="https://…workers.dev" value="${esc(cfg.relayUrl || '')}"></div><div class="sub">Optional. Lets the app get Polymarket's official target when you open it mid-window, and confirms results. See relay/README.md. It needs no keys.</div>`;
     $('#setDecision').dataset.built = 1;
+    $('#relayUrl').addEventListener('change', (e) => { const v = e.target.value.trim(); if (v && !/^https:\/\//.test(v)) { toast('Relay URL must start with https://', 'warn'); return; } cfg.relayUrl = v; saveCfg(); relayTry = 0; toast(v ? 'Relay set' : 'Relay removed'); });
     document.querySelectorAll('[data-k]').forEach(el => el.addEventListener('change', () => { const v = parseFloat(el.value); if (isFinite(v)) { cfg[el.dataset.k] = v / +el.dataset.m; saveCfg(); } }));
     document.querySelectorAll('[data-c]').forEach(el => el.addEventListener('change', () => { const [a, b] = el.dataset.c.split('.'); if (b) cfg[a][b] = el.checked; else cfg[a] = el.checked; saveCfg();
       if (a === 'feeds') { const F = X[b]; if (el.checked) F.restart(); else F.close(); if (b === 'polymarket' && el.checked) loadMarket(MK.tStart); }
@@ -609,7 +642,6 @@ async function togglePip() {
 
 // ---------- wiring ----------
 document.querySelectorAll('#nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('on', x === b)); document.querySelectorAll('main section').forEach(s => s.classList.toggle('on', s.id === 'tab-' + tab)); renderTab(true); window.scrollTo(0, 0); });
-$('#btnConfirm').onclick = () => { if (TG.value > 0) { TG.verified = true; TG.src = TG.src.replace(/\s*\(estimate, confirm\)/, '') + ' · confirmed by you'; diag('Target confirmed by user'); } };
 $('#btnEditTarget').onclick = () => { $('#editTarget').classList.toggle('on'); $('#inTarget').value = TG.value > 0 ? TG.value.toFixed(2) : ''; };
 $('#saveTarget').onclick = () => { const v = parseFloat($('#inTarget').value.replace(/[$,\s]/g, '')); if (v > 1000 && v < 10000000) { setTarget(v, 'manual', true, MK.tStart); TG.src = 'manual'; $('#editTarget').classList.remove('on'); } else toast('Enter a valid BTC price', 'warn'); };
 $('#btnMktPrices').onclick = () => { $('#editMkt').classList.toggle('on'); };
@@ -634,6 +666,10 @@ setInterval(() => FEED_DEFS.forEach(f => X[f.id].watchdog()), 5000);
 setInterval(loop, 500);
 window.__btc5m = { X, MK, TG, st, cfg, E, get decision() { return lastDecision; }, get preds() { return preds; }, get papers() { return papers; }, get candles() { return candles; }, diagLines };
 diag(`Start ${APP_VERSION}`);
+const unlockAudio = () => { try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); const b = document.getElementById('alertBanner'); if (b) b.style.display = 'none'; } catch (e) {} };
+['touchend', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, { once: true }));
+$('#alertBanner').onclick = () => { unlockAudio(); beep('up'); if (!cfg.sound) { cfg.sound = true; saveCfg(); }
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().then(p => { if (p === 'granted') { cfg.notify = true; saveCfg(); } }); toast('Alerts on. You will hear a tone when it says BUY.', 'up'); };
 // PWA: service worker only on https (GitHub Pages); harmless elsewhere
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('./sw.js').then(() => diag('Service worker registered'), (e) => diag('Service worker failed: ' + e.message, 'warn'));
 const netBadge = () => { const el = document.getElementById('offlineBadge'); if (el) el.style.display = navigator.onLine ? 'none' : ''; };

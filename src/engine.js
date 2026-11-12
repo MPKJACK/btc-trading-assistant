@@ -257,6 +257,15 @@
     return { fee, cost, evPerShare: pWin - cost, evPerDollar: (pWin - cost) / cost, breakeven: cost };
   };
 
+  // Highest price worth paying: solves p - c - fee(c) = minEdge * (c + fee(c)), fee(c) = r c (1-c)
+  E.maxPrice = function (pWin, minEdge, r) {
+    const m = 1 + minEdge;
+    if (!(r > 0)) return E.clamp(pWin / m, 0, 0.99);
+    const a = r * m, b = -m * (1 + r), c = pWin, disc = b * b - 4 * a * c;
+    if (disc < 0) return NaN;
+    return E.clamp((-b - Math.sqrt(disc)) / (2 * a), 0, 0.99);
+  };
+
   // ---------- decision ----------
   // st: {target, targetVerified, S, sSource, tRem, sigma, f, model, market:{upAsk,downAsk,upMid}, feedsFresh, freshCount,
   //      dispersionBps, tickVolRatio, conflict}
@@ -297,7 +306,8 @@
     const conf = !isFinite(pSide) ? 'None' : Math.abs(pUp - 0.5) >= 0.3 ? 'High' : Math.abs(pUp - 0.5) >= 0.15 ? 'Medium' : 'Low';
     const strength = best ? Math.round(E.clamp(best.evPerDollar / 0.2, 0, 1) * 100) : 0;
     const rec = gates.length ? 'NO TRADE' : side;
-    return R(rec, { pUp, pDown: 1 - pUp, pModel, pMkt, side, up, dn, best, conf, strength, contributions, reason: gates.length ? gates[0] : '' });
+    const maxPay = side ? E.maxPrice(side === 'UP' ? pUp : 1 - pUp, cfg.minEdge, cfg.feeRate) : NaN;
+    return R(rec, { pUp, pDown: 1 - pUp, pModel, pMkt, side, up, dn, best, conf, strength, contributions, maxPay, reason: gates.length ? gates[0] : '' });
   };
 
   E.explain = function (d, st) {
